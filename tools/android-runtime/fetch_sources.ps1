@@ -25,6 +25,9 @@ $items = @(
     @{
         Name = "talloc-2.4.3"
         Url = "https://www.samba.org/ftp/talloc/talloc-2.4.3.tar.gz"
+        # The samba.org mirrors answered 504/503 for every attempt in CI.
+        # This mirror carries the identical archive (same SHA256 as below).
+        Mirrors = @("https://distfiles.macports.org/talloc/talloc-2.4.3.tar.gz")
         Archive = "talloc-2.4.3.tar.gz"
         Sha256 = "DC46C40B9F46BB34DD97FE41F548B0E8B247B77A918576733C528E83ABD854DD"
         Extracted = "talloc-2.4.3"
@@ -41,23 +44,38 @@ $items = @(
 foreach ($item in $items) {
     $archivePath = Join-Path $downloadsDir $item.Archive
     Write-Host "Downloading $($item.Name)"
-    # Upstream mirrors intermittently answer 5xx (a 504 from the Samba FTP
-    # mirror was observed in CI). Retry before giving up: the SHA256 check
-    # below already guarantees the payload is intact.
-    $maxAttempts = 4
-    for ($attempt = 1; $attempt -le $maxAttempts; $attempt++) {
-        try {
-            Invoke-WebRequest -Uri $item.Url -OutFile $archivePath -TimeoutSec 300
+    # Upstream mirrors intermittently answer 5xx, and the samba.org mirrors
+    # stayed unavailable across every attempt in CI. Retry each source and
+    # then fall back to the declared mirrors; the SHA256 check below
+    # guarantees the payload is intact no matter which host served it.
+    $sources = @($item.Url)
+    if ($item.ContainsKey("Mirrors")) {
+        $sources += @($item.Mirrors)
+    }
+    $maxAttempts = 3
+    $downloaded = $false
+    foreach ($source in $sources) {
+        for ($attempt = 1; $attempt -le $maxAttempts -and -not $downloaded; $attempt++) {
+            try {
+                Write-Host "Fetching $source (attempt $attempt)"
+                Invoke-WebRequest -Uri $source -OutFile $archivePath -TimeoutSec 300
+                $downloaded = $true
+            }
+            catch {
+                Write-Host "Download failed ($($_.Exception.Message))"
+                if ($attempt -lt $maxAttempts) {
+                    $delaySeconds = 10 * $attempt
+                    Write-Host "Retrying in $delaySeconds s"
+                    Start-Sleep -Seconds $delaySeconds
+                }
+            }
+        }
+        if ($downloaded) {
             break
         }
-        catch {
-            if ($attempt -eq $maxAttempts) {
-                throw
-            }
-            $delaySeconds = 10 * $attempt
-            Write-Host "Download failed ($($_.Exception.Message)); retrying in $delaySeconds s"
-            Start-Sleep -Seconds $delaySeconds
-        }
+    }
+    if (-not $downloaded) {
+        throw "Failed to download $($item.Name) from: $($sources -join ', ')"
     }
 
     $actualSha256 = (Get-FileHash -Algorithm SHA256 -Path $archivePath).Hash.ToUpperInvariant()
