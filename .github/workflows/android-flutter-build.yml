@@ -108,7 +108,12 @@ jobs:
             unzip \
             zip \
             lld \
-            libclang-dev
+            libclang-dev \
+            libgstreamer-plugins-base1.0-dev \
+            libgstreamer1.0-dev \
+            libgtk-3-dev \
+            libayatana-appindicator3-dev \
+            liblzma-dev
 
       # V8's bindings generation needs libclang 21.1+; the distro libclang is
       # older. prepare_android_v8.py looks under /usr/lib/llvm21/lib.
