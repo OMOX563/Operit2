@@ -41,7 +41,24 @@ $items = @(
 foreach ($item in $items) {
     $archivePath = Join-Path $downloadsDir $item.Archive
     Write-Host "Downloading $($item.Name)"
-    Invoke-WebRequest -Uri $item.Url -OutFile $archivePath
+    # Upstream mirrors intermittently answer 5xx (a 504 from the Samba FTP
+    # mirror was observed in CI). Retry before giving up: the SHA256 check
+    # below already guarantees the payload is intact.
+    $maxAttempts = 4
+    for ($attempt = 1; $attempt -le $maxAttempts; $attempt++) {
+        try {
+            Invoke-WebRequest -Uri $item.Url -OutFile $archivePath -TimeoutSec 300
+            break
+        }
+        catch {
+            if ($attempt -eq $maxAttempts) {
+                throw
+            }
+            $delaySeconds = 10 * $attempt
+            Write-Host "Download failed ($($_.Exception.Message)); retrying in $delaySeconds s"
+            Start-Sleep -Seconds $delaySeconds
+        }
+    }
 
     $actualSha256 = (Get-FileHash -Algorithm SHA256 -Path $archivePath).Hash.ToUpperInvariant()
     if ($actualSha256 -ne $item.Sha256) {
