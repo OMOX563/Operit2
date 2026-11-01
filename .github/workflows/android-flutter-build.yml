@@ -107,6 +107,23 @@ jobs:
           }
           pnpm --version
 
+      # plugins/packages/buildin/character_cards/scripts/build.mjs resolves
+      # esbuild/fflate/typescript through ../../workflow/package.json, but the
+      # sync hook never installs that package's dependencies (character_cards
+      # itself declares none and has no lockfile). BUILDING.md requires this
+      # install to happen before the Gradle plugin-sync hook runs.
+      - name: Install built-in workflow plugin dependencies
+        shell: pwsh
+        working-directory: plugins/packages/buildin/workflow
+        run: |
+          corepack pnpm install --frozen-lockfile
+          foreach ($module in @("esbuild", "fflate", "typescript")) {
+            $resolved = Join-Path $PWD "node_modules\$module"
+            if (-not (Test-Path -LiteralPath $resolved)) {
+              throw "workflow dependency '$module' was not installed at $resolved"
+            }
+          }
+
       - name: Install Java
         uses: actions/setup-java@v4
         with:
