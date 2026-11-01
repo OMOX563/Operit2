@@ -100,6 +100,20 @@ jobs:
           distribution: temurin
           java-version: "17"
 
+      # The plugin sync hook (plugins/tools/sync_plugin_packages.py) compiles
+      # plugin TypeScript with the repository-managed compiler under
+      # .ci-tools/typescript and does not fall back to a PATH lookup for it.
+      # The web workflow installs it; the Android workflow was missing it.
+      - name: Install repository-managed TypeScript compiler
+        shell: pwsh
+        run: |
+          npm install --prefix .ci-tools/typescript --no-audit --no-fund typescript@5.9.3
+          $tsc = Join-Path $PWD ".ci-tools\typescript\node_modules\.bin\tsc.cmd"
+          if (-not (Test-Path -LiteralPath $tsc)) {
+            throw "TypeScript compiler was not prepared at $tsc"
+          }
+          & $tsc --version
+
       - name: Install FVM
         shell: pwsh
         run: |
