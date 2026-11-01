@@ -124,6 +124,20 @@ jobs:
             }
           }
 
+      # The Gradle task ':app:syncOperitPlugins' spawns the interpreter at the
+      # hardcoded repo-root path .venv/Scripts/python.exe (build.gradle.kts).
+      # The sync script is stdlib-only, so a bare venv satisfies it; without it
+      # Gradle fails with "A problem occurred starting process".
+      - name: Create repository Python virtual environment
+        shell: pwsh
+        run: |
+          python -m venv .venv
+          $python = Join-Path $PWD ".venv\Scripts\python.exe"
+          if (-not (Test-Path -LiteralPath $python)) {
+            throw "Repository venv was not created at $python"
+          }
+          & $python --version
+
       - name: Install Java
         uses: actions/setup-java@v4
         with:
