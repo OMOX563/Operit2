@@ -94,6 +94,19 @@ jobs:
         with:
           node-version: 24
 
+      # The plugin sync hook invokes `corepack pnpm run pack:toolpkg`, but the
+      # package scripts themselves call bare `pnpm`. Without the corepack shim
+      # on PATH that inner call dies with "'pnpm' is not recognized".
+      - name: Enable corepack pnpm shim
+        shell: pwsh
+        run: |
+          corepack enable pnpm
+          $shim = (Get-Command pnpm -ErrorAction SilentlyContinue)
+          if ($null -eq $shim) {
+            throw "corepack did not install a pnpm shim on PATH"
+          }
+          pnpm --version
+
       - name: Install Java
         uses: actions/setup-java@v4
         with:
