@@ -73,6 +73,12 @@ jobs:
       RUSTFLAGS: -Awarnings
       RUST_TOOLCHAIN_VERSION: 1.95.0
       FVM_VERSION: 4.3.0
+      # prepare_android_v8.py reads subprocess output with text=True but no
+      # explicit encoding, so Python falls back to the runner locale (cp1252
+      # on the English Windows image) and dies on UTF-8 bytes in the V8 build
+      # log. UTF-8 mode makes the default encoding UTF-8 everywhere.
+      PYTHONUTF8: "1"
+      PYTHONIOENCODING: "utf-8"
 
     steps:
       - name: Checkout
