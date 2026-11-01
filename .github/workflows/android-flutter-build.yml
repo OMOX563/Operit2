@@ -120,7 +120,19 @@ jobs:
             | sudo tee /etc/apt/sources.list.d/llvm.list > /dev/null
           sudo apt-get update
           sudo apt-get install -y llvm-21-dev libclang-21-dev
-          ls /usr/lib/llvm21/lib/libclang.so*
+          # Debian ships the library as libclang-21.so.21, while
+          # prepare_android_v8.py only accepts names matching libclang.so.<N>.
+          # Add the conventional alias so the script can find it.
+          sudo ln -sf /usr/lib/x86_64-linux-gnu/libclang-21.so.21 /usr/lib/llvm-21/lib/libclang.so.21
+          ls -l /usr/lib/llvm-21/lib/libclang.so.21
+
+      # Gradle defaults LIBCLANG_PATH to /usr/lib on Linux, where the library
+      # does not live. Point it at the LLVM 21 directory that now carries the
+      # conventional libclang.so.21 alias.
+      - name: Configure libclang search path
+        run: |
+          echo "OPERIT_LIBCLANG_DIR=/usr/lib/llvm-21/lib" >> "$GITHUB_ENV"
+          echo "LIBCLANG_PATH=/usr/lib/llvm-21/lib" >> "$GITHUB_ENV"
 
       - name: Install bootstrap Dart
         uses: dart-lang/setup-dart@v1
