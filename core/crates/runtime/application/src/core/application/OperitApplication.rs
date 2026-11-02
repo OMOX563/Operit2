@@ -850,23 +850,29 @@ impl OperitApplication {
         let summary = store.synchronizationSummary().map_err(|e|e.to_string())?;
         let (receipt,failures) = registry.receipt()?;
         errors.extend(failures);
-        let pending = store.pendingOperationIds().map_err(|error| error.to_string())?;
+        let pending = store.applicationOperations().map_err(|e|e.to_string())?;
+        let mut states = BTreeMap::<&str, &SyncOperation>::new();
+        for operation in pending.iter().filter(|op|op.domain == RUNTIME_FILE_SYNC_DOMAIN) {
+            if states.get(operation.entityId.as_str()).is_none_or(|current|
+                operit_store::Transaction::Revision::fromOperation(operation) > operit_store::Transaction::Revision::fromOperation(current)) {
+                states.insert(&operation.entityId, operation);
+            }
+        }
         let mut blobs = BTreeMap::new();
-        store.visitPendingOperations(&[RUNTIME_FILE_SYNC_DOMAIN], |operation| {
+        for operation in states.into_values() {
+            if !store.shouldApplyOperation(operation).map_err(|e|e.to_string())? { continue; }
             match RuntimeFileSyncStore::requiredBlob(operation) {
-                Ok(Some(reference)) => {
-                    blobs.insert(reference.contentHash.clone(), reference);
-                }
+                Ok(Some(reference)) => { blobs.insert(reference.contentHash.clone(), reference); }
                 Ok(None) => {}
                 Err(error) => errors.push(format!("pending blob op={}: {error}", operation.opId)),
             }
-        }).map_err(|error| error.to_string())?;
+        }
         let mut result = serde_json::to_value(receipt).map_err(|error| error.to_string())?;
         result["protocolVersion"] = serde_json::json!(1);
         result["consistencyVersion"] = serde_json::json!(6);
         result["stateSummary"] = serde_json::json!(format!("digest:{summary}"));
         result["pending"] = serde_json::json!(pending.len());
-        result["pendingOperationIds"] = serde_json::json!(pending);
+        result["pendingOperationIds"] = serde_json::json!(pending.into_iter().map(|op|op.opId).collect::<Vec<_>>());
         result["pendingBlobs"] = serde_json::to_value(blobs.into_values().collect::<Vec<_>>())
             .map_err(|error| error.to_string())?;
         result["errors"] = serde_json::json!(errors);
@@ -1131,11 +1137,13 @@ impl OperitApplication {
     }
 
     /// Verifies a page of local blobs, retaining each file's independent failure.
+    /// Keep the per-file Result envelopes in JSON: nested Results are not proxyable return types.
     #[allow(non_snake_case)]
-    pub fn syncBlobExists(&self, references: serde_json::Value) -> Result<Vec<Result<bool, String>>, String> {
+    pub fn syncBlobExists(&self, references: serde_json::Value) -> Result<serde_json::Value, String> {
         let references: Vec<RuntimeFileSyncReference> = serde_json::from_value(references).map_err(|e|e.to_string())?;
         let store = self.runtimeFileSyncStore()?;
-        Ok(references.iter().map(|reference|store.hasBlob(reference)).collect())
+        let presence: Vec<Result<bool, String>> = references.iter().map(|reference|store.hasBlob(reference)).collect();
+        serde_json::to_value(presence).map_err(|error|error.to_string())
     }
 
     /// Reads one bounded synchronization blob chunk for transfer to another CoreNode.
