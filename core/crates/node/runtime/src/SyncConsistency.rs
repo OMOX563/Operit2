@@ -14,6 +14,9 @@ struct Report {
     pendingOwners: BTreeSet<String>,
     #[serde(default)]
     skipped: BTreeMap<String, BTreeSet<String>>,
+    /// Layout retirements reported by the peer; both sides must ignore these owners.
+    #[serde(default)]
+    retired: BTreeSet<String>,
 }
 
 /// Exchanging every known original does not prove equal contents on an older peer.
@@ -175,12 +178,25 @@ fn reportsAtExchange(local: &Report, remote: &Report, local_receipt: &SyncReceip
     Ok(local.boundary == digest(local_receipt)? && remote.boundary == digest(remote_receipt)?)
 }
 
+/// Directory declarations include descendants, while file declarations match exactly.
+fn is_retired(path: &str, retired: &BTreeSet<String>) -> bool {
+    retired.iter().any(|source| path == source || source.ends_with('/')
+        && (path.starts_with(source.as_str()) || path == source.trim_end_matches('/')))
+}
+
+/// Either endpoint may retire an owner; the union keeps both sides to the same verdict.
+fn retirements(local: &Report, remote: &Report) -> BTreeSet<String> {
+    local.retired.union(&remote.retired).cloned().collect()
+}
+
 /// The union of inventories includes files that exist on only one endpoint.
 fn correctionPlans<'a>(local: &'a Report, remote: &'a Report) -> Vec<(Option<&'a Manifest>, Option<&'a Manifest>, Source)> {
     let mut files = BTreeMap::new();
     for manifest in &local.manifests { files.entry((&manifest.owner.path,&manifest.owner.backend)).or_insert((None,None)).0 = Some(manifest); }
     for manifest in &remote.manifests { files.entry((&manifest.owner.path,&manifest.owner.backend)).or_insert((None,None)).1 = Some(manifest); }
+    let retired = retirements(local, remote);
     files.into_iter().filter_map(|((path,_),(a,b))| {
+        if is_retired(path, &retired) { return None; }
         if local.pendingOwners.contains(path) || remote.pendingOwners.contains(path) { return None; }
         let choice = match (a,b) {
             (Some(a),Some(b)) => compare_manifests(a,b).ok()?,
@@ -221,13 +237,19 @@ fn verifyReports(local: &Report, remote: &Report, changed: &BTreeSet<String>) ->
     if !local.errors.is_empty() || !remote.errors.is_empty() {
         return Err("Consistency check has owner errors".into());
     }
-    if local.pendingOwners.union(&remote.pendingOwners).any(|path| !changed.contains(path)) {
+    let retired = retirements(local, remote);
+    if local.pendingOwners.union(&remote.pendingOwners)
+        .any(|path| !changed.contains(path) && !is_retired(path, &retired)) {
         return Err("Consistency check has pending owners".into());
     }
-    let mut complete = local.pendingOwners.is_empty() && remote.pendingOwners.is_empty()
-        && local.skipped.is_empty() && remote.skipped.is_empty();
+    // A retired owner never synchronizes, so its transactions can never be sealed either.
+    let mut complete = local.pendingOwners.iter().chain(remote.pendingOwners.iter())
+        .all(|path| is_retired(path, &retired))
+        && local.skipped.keys().chain(remote.skipped.keys()).all(|path| is_retired(path, &retired));
     for (a,b) in [(local,remote),(remote,local)] {
         for manifest in &a.manifests {
+            // Retired contents are expected to differ; comparing them only blocks the pass.
+            if is_retired(&manifest.owner.path, &retired) { continue; }
             let comparison = match b.manifests.iter().find(|other|other.owner.path == manifest.owner.path && other.owner.backend == manifest.owner.backend) {
                 Some(other) => compare_manifests(manifest,other),
                 None => Err(format!("Missing synchronized file: {}",manifest.owner.path)),
@@ -258,7 +280,7 @@ mod tests {
             manifests: vec![snapshot.manifest().unwrap()],
             boundary: Default::default(),
             errors: vec![],
-            pendingOwners: BTreeSet::new(), skipped: BTreeMap::new(),
+            pendingOwners: BTreeSet::new(), skipped: BTreeMap::new(), retired: BTreeSet::new(),
         }
     }
 
@@ -325,8 +347,8 @@ mod tests {
 
     #[test]
     fn correction_uses_each_peers_export_boundary_without_equal_histories_or_wall_clocks() {
-        let mut a = Report { manifests: vec![], boundary: Default::default(), errors: vec![], pendingOwners: BTreeSet::new(), skipped: BTreeMap::new() };
-        let mut b = Report { manifests: vec![], boundary: Default::default(), errors: vec![], pendingOwners: BTreeSet::new(), skipped: BTreeMap::new() };
+        let mut a = Report { manifests: vec![], boundary: Default::default(), errors: vec![], pendingOwners: BTreeSet::new(), skipped: BTreeMap::new(), retired: BTreeSet::new() };
+        let mut b = Report { manifests: vec![], boundary: Default::default(), errors: vec![], pendingOwners: BTreeSet::new(), skipped: BTreeMap::new(), retired: BTreeSet::new() };
         let mut a_exported = SyncReceipt::default();
         let mut b_exported = SyncReceipt::default();
         a_exported.observe("a", 17);
@@ -353,7 +375,7 @@ mod tests {
             backend: Backend::DataStore, path: "file.preferences.json".into(), format: 0, layout: 1,
         }), covered: BTreeSet::new(), generation: 0 };
         let present = report(&snapshot);
-        let empty = Report { manifests: vec![], boundary: Default::default(), errors: vec![], pendingOwners: BTreeSet::new(), skipped: BTreeMap::new() };
+        let empty = Report { manifests: vec![], boundary: Default::default(), errors: vec![], pendingOwners: BTreeSet::new(), skipped: BTreeMap::new(), retired: BTreeSet::new() };
         for (a,b,choice) in [(&present,&empty,Source::Local),(&empty,&present,Source::Remote)] {
             let plans = correctionPlans(a,b);
             assert_eq!(plans.len(),1);
@@ -454,7 +476,7 @@ mod tests {
         assert_eq!(retry, BTreeSet::from(["memory.sqlite".into()]));
         assert_eq!(super::verifyReports(&before, &after, &retry), Ok(false));
         assert_eq!(super::verifyReports(&after, &after, &retry), Ok(true));
-        let empty = Report { manifests: vec![], boundary: Default::default(), errors: vec![], pendingOwners: BTreeSet::new(), skipped: BTreeMap::new() };
+        let empty = Report { manifests: vec![], boundary: Default::default(), errors: vec![], pendingOwners: BTreeSet::new(), skipped: BTreeMap::new(), retired: BTreeSet::new() };
         assert_eq!(changedOwners(&before, &empty), retry);
         assert_eq!(changedOwners(&empty, &after), retry);
         assert!(changedOwners(&before, &before).is_empty());
