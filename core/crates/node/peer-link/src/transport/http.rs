@@ -34,8 +34,10 @@ fn request(url: String, method: &str, id: &str, body: Vec<u8>) -> HttpRequestDat
         body,
         formFields: vec![],
         fileParts: vec![],
-        connectTimeoutSeconds: 15,
-        readTimeoutSeconds: if method == "GET" { 0 } else { 15 },
+        connectTimeoutSeconds: 30,
+        // 跨公网中继时单次同步 POST（含 1MB blob 分块）经常超过 15s，
+        // 放宽到 180s；GET 是长连接流式接收，保持 0（不设读超时）。
+        readTimeoutSeconds: if method == "GET" { 0 } else { 180 },
         followRedirects: false,
         ignoreSsl: false,
         proxyHost: String::new(),

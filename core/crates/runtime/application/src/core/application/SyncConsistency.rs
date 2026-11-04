@@ -136,7 +136,12 @@ impl OperitApplication {
         let skipped = registry.skipped()?.into_iter().map(|(path,operations)|
             (path,operations.into_iter().map(|operation|operation.opId).collect::<std::collections::BTreeSet<_>>()))
             .collect::<BTreeMap<_,_>>();
-        Ok(json!({"manifests":manifests,"pendingOwners":pending,"skipped":skipped,"errors":errors,"boundary":operit_store::Transaction::digest(&receipt)?}))
+        // Retirement is a layout decision of this endpoint; the peer needs it to skip these owners.
+        let retired: std::collections::BTreeSet<String> = match self.hostManager.runtimeStorageHost.clone() {
+            Some(storage) => operit_store::PreferenceLayout::retirements(storage).map_err(|e|e.to_string())?,
+            None => Default::default(),
+        };
+        Ok(json!({"manifests":manifests,"pendingOwners":pending,"skipped":skipped,"retired":retired,"errors":errors,"boundary":operit_store::Transaction::digest(&receipt)?}))
     }
     pub(super) fn exportConsistencySnapshot(&self, owner: Owner, token: &str) -> Result<Value,String> {
         let pending = self.runtimeSyncOperationStore()?.pendingOperations().map_err(|e|e.to_string())?;
