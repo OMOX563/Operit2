@@ -139,11 +139,24 @@ pub fn routes(storage: Arc<dyn RuntimeStorageHost>) -> Result<BTreeMap<String, S
     Ok(resolved)
 }
 
+/// Retirements shipped with this build; a node that never declared a layout inherits them.
+const DEFAULT_RETIREMENTS: [&str; 6] = [
+    "runtime/data/user_assets/theme/",
+    "runtime/config/preferences/user_preferences.preferences.json",
+    "runtime/config/preferences/sidebar_dock.preferences.json",
+    "runtime/config/preferences/application_zoom.preferences.json",
+    "runtime/plugin_data/space/com.operit.character_cards/chats.preferences.json",
+    "runtime/plugin_data/space/com.operit.character_cards/conversationGroups.preferences.json",
+];
+
 /// Retirement is an explicit layout decision; unknown paths have no such disposition.
 pub fn retirements(storage: Arc<dyn RuntimeStorageHost>) -> Result<BTreeSet<String>, String> {
     let values = CoreNodeStateStore::newWithStorage(storage, ROUTES_PATH).data().map_err(|e| e.to_string())?;
-    Ok(values.iterEntries().filter_map(|(key, value)| {
+    let declared = values.iterEntries().filter_map(|(key, value)| {
         if value != &serde_json::Value::Bool(true) { return None; }
         key.strip_prefix(RETIRED_FILE).or_else(|| key.strip_prefix(RETIRED_DIRECTORY)).map(str::to_owned)
-    }).collect())
+    }).collect::<BTreeSet<_>>();
+    // A node without a declaration of its own uses the layout this build ships.
+    if declared.is_empty() { return Ok(DEFAULT_RETIREMENTS.iter().map(|path| (*path).to_owned()).collect()); }
+    Ok(declared)
 }
