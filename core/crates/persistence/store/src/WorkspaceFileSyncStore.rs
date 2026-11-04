@@ -17,6 +17,10 @@ use crate::SyncOperationStore::{SyncOperation, SyncOperationStore};
 
 type Inventory = BTreeMap<String, FileStamp>;
 
+/// Files larger than this are never published to the synchronization journal.
+/// The peer runs the same rule, so the file simply stays node-local on both sides.
+const MAX_SYNC_FILE_BYTES: i64 = 100 * 1024 * 1024;
+
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 struct FileStamp {
     size: i64,
@@ -144,6 +148,12 @@ impl WorkspaceFileSyncStore {
         }
         for (path, stamp) in &current {
             if state.files.get(path) != Some(stamp) {
+                // Oversized files stay node-local: inventory them so a scan does not
+                // re-read them every pass, but never publish their contents.
+                if stamp.size > MAX_SYNC_FILE_BYTES {
+                    changes += 1;
+                    continue;
+                }
                 let bytes = self.host.readBytes(path).map_err(|e| e.to_string())?;
                 files.recordSnapshot(path, &bytes, false)?;
                 changes += 1;
