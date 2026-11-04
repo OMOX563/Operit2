@@ -32,7 +32,7 @@ const SYNC_DOMAINS: [&str; 6] = [
 ];
 // 64KB → 1MB：37MB 的库从 ~592 次往返降到 ~37 次。
 // 上限由 DEFAULT_MAX_PEER_MESSAGE_BYTES = 4MB 约束，1MB 留足余量。
-const SYNC_BLOB_CHUNK_BYTES: i64 = 64 * 1024;
+const SYNC_BLOB_CHUNK_BYTES: i64 = 1024 * 1024;
 /// Wire reservation for the Link request envelope, AEAD tag and frame prefix.
 /// One operation above this reservation cannot travel in any single message.
 const SYNC_PAGE_ENVELOPE_BYTES: usize = 4 * 1024;

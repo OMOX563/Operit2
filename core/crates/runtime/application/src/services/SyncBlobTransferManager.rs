@@ -8,7 +8,7 @@ use operit_util::stream::Stream::Stream;
 use operit_util::RuntimeStorageLayout::RUNTIME_SYNC_DIR_PATH;
 use sha2::{Digest, Sha256};
 
-const SYNC_BLOB_CHUNK_BYTES: usize = 64 * 1024;
+const SYNC_BLOB_CHUNK_BYTES: usize = 1024 * 1024;
 
 /// Owns streamed synchronization blob uploads for one CoreNode runtime.
 #[derive(Clone)]
