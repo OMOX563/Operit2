@@ -2,10 +2,10 @@
 
 const IDLE_MS: u64 = 3_000;
 const MIN_TIMEOUT_MS: u64 = 5_000;
-const MAX_TIMEOUT_MS: u64 = 240_000;
+const MAX_TIMEOUT_MS: u64 = 180_000;
 /// Grace granted after a doubted probe: a long-running peer operation can keep
 /// the channel receive-silent for minutes while it is still perfectly alive.
-const SUSPECT_GRACE_MS: u64 = 240_000;
+const SUSPECT_GRACE_MS: u64 = 120_000;
 
 /// Describes the next control action without performing transport I/O.
 #[derive(Debug, PartialEq, Eq)]
@@ -105,8 +105,8 @@ mod tests {
         assert_eq!(state.tick(3_000), HeartbeatAction::Ping("0".into()));
         assert_eq!(state.tick(4_000), HeartbeatAction::None);
         assert_eq!(state.tick(8_000), HeartbeatAction::Suspect);
-        assert_eq!(state.tick(247_999), HeartbeatAction::None);
-        assert_eq!(state.tick(248_000), HeartbeatAction::Expired);
+        assert_eq!(state.tick(127_999), HeartbeatAction::None);
+        assert_eq!(state.tick(128_000), HeartbeatAction::Expired);
     }
 
     /// Prevents a timed-out probe from overriding newer receive evidence.
