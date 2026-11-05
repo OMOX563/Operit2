@@ -42,6 +42,10 @@ const PAIRING_LIFETIME_MS: i64 = 300_000;
 /// caller, so a dial to an unreachable peer becomes an error for every business
 /// call, watch and push instead of holding whoever asked for it.
 const CONNECT_DEADLINE_MS: u64 = 30_000;
+/// With several candidate endpoints the whole loop is still bounded by
+/// `CONNECT_DEADLINE_MS`, but one endpoint's connect and authentication each
+/// get this slice; five seconds is tight for a TLS upgrade across a relay.
+const ENDPOINT_STEP_DEADLINE: std::time::Duration = std::time::Duration::from_secs(10);
 /// Resolves the pairing carrier when the caller left it open: an explicit URL
 /// scheme implies its carrier, a bare `ip:port` is classified by one throwaway
 /// probe connection (see `operit_peer_link::detectTransport`).
@@ -695,7 +699,7 @@ impl HostRuntimePeerService {
             for (address, transport) in endpoints {
                 let connect = self.raw(PeerEndpoint { nodeId: node.into(), address: address.clone() }, transport);
                 let result = if hasAlternatives {
-                    tokio::time::timeout(std::time::Duration::from_secs(5), connect).await
+                    tokio::time::timeout(ENDPOINT_STEP_DEADLINE, connect).await
                         .unwrap_or_else(|_| Err(CoreLinkError::new("PEER_CONNECT_TIMEOUT", "Pairing endpoint connection timed out")))
                 } else { connect.await };
                 let raw = match result {
@@ -704,7 +708,7 @@ impl HostRuntimePeerService {
                 };
                 let handshake = self.handshake(raw.clone(), "session", &record.sessionId, Some(&root), None, None);
                 let result = if hasAlternatives {
-                    tokio::time::timeout(std::time::Duration::from_secs(5), handshake).await
+                    tokio::time::timeout(ENDPOINT_STEP_DEADLINE, handshake).await
                         .unwrap_or_else(|_| Err(CoreLinkError::new("PEER_CONNECT_TIMEOUT", "Pairing endpoint authentication timed out")))
                 } else { handshake.await };
                 let channel = match result {

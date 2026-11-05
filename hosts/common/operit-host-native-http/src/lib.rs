@@ -52,6 +52,37 @@ struct NativeWebSocketRegistration {
     cancel: tokio::sync::watch::Sender<bool>,
 }
 
+/// A full outbound queue is backpressure from a slow socket, not a broken
+/// channel: the writer drains as fast as the transport allows. Waiting one
+/// short, bounded slice keeps a busy moment from failing the business call
+/// that produced the frame.
+const WEBSOCKET_SEND_BACKPRESSURE_MS: u64 = 2_000;
+const WEBSOCKET_SEND_BACKPRESSURE_STEP_MS: u64 = 2;
+
+/// Enqueues one frame, waiting for queue capacity under a bounded deadline.
+fn enqueueWebSocketFrame(
+    commands: &tokio::sync::mpsc::Sender<tungstenite::Message>,
+    message: tungstenite::Message,
+) -> HostResult<()> {
+    let deadline = std::time::Instant::now() + Duration::from_millis(WEBSOCKET_SEND_BACKPRESSURE_MS);
+    let mut message = message;
+    loop {
+        match commands.try_send(message) {
+            Ok(()) => return Ok(()),
+            Err(tokio::sync::mpsc::error::TrySendError::Full(returned)) => {
+                if std::time::Instant::now() >= deadline {
+                    return Err(HostError::timeout("WebSocket send queue stayed full"));
+                }
+                message = returned;
+                std::thread::sleep(Duration::from_millis(WEBSOCKET_SEND_BACKPRESSURE_STEP_MS));
+            }
+            Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
+                return Err(HostError::new("WebSocket is closed"));
+            }
+        }
+    }
+}
+
 impl NativeHttpHost {
     /// Creates a native HTTP host.
     pub fn new() -> Self {
@@ -142,10 +173,7 @@ impl WebSocketHost for NativeHttpHost {
             .get(streamId)
             .cloned()
             .ok_or_else(|| HostError::new(format!("WebSocket is not open: {streamId}")))?;
-        sender
-            .commands
-            .try_send(tungstenite::Message::Binary(message))
-            .map_err(|error| HostError::new(error.to_string()))
+        enqueueWebSocketFrame(&sender.commands, tungstenite::Message::Binary(message))
     }
 
     /// Sends one UTF-8 text frame through a native WebSocket.
@@ -153,7 +181,7 @@ impl WebSocketHost for NativeHttpHost {
     fn sendWebSocketText(&self, streamId: &str, text: String) -> HostResult<()> {
         let sender = self.webSockets.lock().map_err(|error| HostError::new(error.to_string()))?
             .get(streamId).cloned().ok_or_else(|| HostError::new(format!("WebSocket is not open: {streamId}")))?;
-        sender.commands.try_send(tungstenite::Message::Text(text)).map_err(|error| HostError::new(error.to_string()))
+        enqueueWebSocketFrame(&sender.commands, tungstenite::Message::Text(text))
     }
 
     /// Closes one native WebSocket.

@@ -9,6 +9,30 @@ const MAX_CONNECTING_PEERS: usize = 4;
 /// Policy rejections (`PEER_CONNECTION_REVOKED`) are deterministic until an admin
 /// admits the peer again, so probing them at the discovery interval is pure waste.
 const POLICY_REVOKED_BACKOFF_MS: u64 = 60_000;
+/// Ordinary dial failures back off exponentially: retrying every discovery tick
+/// turns one unreachable peer into a permanent handshake burst that starves the
+/// dial slots and the outbound queues of the peers that do work.
+const CONNECT_BACKOFF_BASE_MS: u64 = 4_000;
+const CONNECT_BACKOFF_MAX_MS: u64 = 60_000;
+/// Spreads independent retries so two nodes never re-arm in lockstep.
+const CONNECT_BACKOFF_JITTER_PERCENT: u64 = 25;
+
+/// Next attempt delay for one peer after `attempts` consecutive failures.
+fn connectBackoff(attempts: u32) -> u64 {
+    let exponent = attempts.saturating_sub(1).min(6);
+    let delay = CONNECT_BACKOFF_BASE_MS
+        .saturating_mul(1u64 << exponent)
+        .min(CONNECT_BACKOFF_MAX_MS);
+    let spread = delay * CONNECT_BACKOFF_JITTER_PERCENT / 100;
+    if spread == 0 {
+        return delay;
+    }
+    let seed = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|elapsed| elapsed.subsec_nanos() as u64)
+        .unwrap_or(0);
+    delay - spread + seed % (spread * 2 + 1)
+}
 
 pub(super) struct AvailabilityWorker {
     stop: oneshot::Sender<()>,
@@ -42,6 +66,7 @@ impl HostRuntimePeerService {
             let mut pending = FuturesUnordered::<LocalBoxFuture<'static, (String, Result<(), CoreLinkError>)>>::new();
             let mut connecting = BTreeSet::new();
             let mut policyRevokedUntil = BTreeMap::<String, std::time::Instant>::new();
+            let mut connectBackoffUntil = BTreeMap::<String, (u32, std::time::Instant)>::new();
             let mut tick = tasks.waitForHostRuntimeDelay(0);
             let mut lastPeer = None;
             loop {
@@ -51,9 +76,16 @@ impl HostRuntimePeerService {
                     result = pending.next(), if !pending.is_empty() => {
                         if let Some((node, result)) = result {
                             connecting.remove(&node);
+                            if result.is_ok() {
+                                connectBackoffUntil.remove(&node);
+                            }
                             if let Err(error) = result {
                                 if error.code == "PEER_CONNECTION_REVOKED" {
                                     policyRevokedUntil.insert(node.clone(), std::time::Instant::now() + std::time::Duration::from_millis(POLICY_REVOKED_BACKOFF_MS));
+                                } else {
+                                    let attempts = connectBackoffUntil.get(&node).map_or(1, |(failed, _)| failed.saturating_add(1));
+                                    let delay = connectBackoff(attempts);
+                                    connectBackoffUntil.insert(node.clone(), (attempts, std::time::Instant::now() + std::time::Duration::from_millis(delay)));
                                 }
                                 if let Some(state) = state.upgrade() {
                                     HostRuntimePeerService { state }.refreshPeerAvailability(&node);
@@ -81,12 +113,15 @@ impl HostRuntimePeerService {
                         let split = peers.partition_point(|peer| lastPeer.as_ref().is_some_and(|last| &peer.nodeId <= last));
                         peers.rotate_left(split);
                         for peer in peers {
-                            if policyRevokedUntil.contains_key(&peer.nodeId) { continue; }
+                            if policyRevokedUntil.contains_key(&peer.nodeId) || connectBackoffUntil.contains_key(&peer.nodeId) { continue; }
                             if service.requirePeerConnectionAllowed(&peer.nodeId).is_err() {
                                 service.refreshPeerAvailability(&peer.nodeId);
                                 continue;
                             }
-                            if connecting.contains(&peer.nodeId) || service.hasLiveChannel(&peer.nodeId) { continue; }
+                            if connecting.contains(&peer.nodeId) || service.hasLiveChannel(&peer.nodeId) {
+                                connectBackoffUntil.remove(&peer.nodeId);
+                                continue;
+                            }
                             if !peer.outbound { continue; }
                             if connecting.len() >= MAX_CONNECTING_PEERS.min(service.state.limits.concurrentProbes) { break; }
                             let node = peer.nodeId;
