@@ -398,7 +398,10 @@ impl SpacePersistenceSyncService {
         let mut cycleDecisions = BTreeMap::<String, bool>::new();
         let membershipBeforeExchange = self.state.spaceStore.space()?.members.into_iter().collect::<BTreeSet<_>>();
         for peerNodeId in services.peers().outboundPeerNodeIds().map_err(|error| error.to_string())? {
-            if !activePeers.contains(&peerNodeId) { continue; }
+            if !activePeers.contains(&peerNodeId) {
+                self.tryReattachPeer(&peerNodeId).await;
+                continue;
+            }
             match control.nodeIsDisconnected(&peerNodeId) {
                 Ok(false) => {},
                 Ok(true) => continue,
@@ -434,6 +437,7 @@ impl SpacePersistenceSyncService {
                 Err(error) => { errors.push(format!("Peer {targetNodeId} reachability: {error}")); continue; }
             };
             if !reachable {
+                self.tryReattachPeer(&targetNodeId).await;
                 self.state.progress.remove(&targetNodeId);
                 continue;
             }
@@ -659,6 +663,46 @@ impl SpacePersistenceSyncService {
             self.state.localRuntime.runtimeStorageHost(), RUNTIME_SYNC_DIR_PATH);
         store.publishPreferenceOutboxes().map_err(|e|e.to_string())?;
         store.synchronizationSummary().map(|digest|format!("digest:{digest}")).map_err(|e|e.to_string())
+    }
+
+    /// Rebuilds a dropped peer link once the gate's retry backoff has elapsed.
+    ///
+    /// 可达性来自 active peer 集合，而集合只在连接建立成功后写入，于是掉线一次
+    /// 就会被同步循环永久跳过。这里借 callRemote 的惰性连接路径主动探一次时钟：
+    /// 探通即重建链路，探不通按原有指数退避（2s→60s）拉长重试间隔。
+    async fn tryReattachPeer(&self, targetNodeId: &str) {
+        let retryAllowed = self
+            .state
+            .peerGates
+            .lock()
+            .map(|gates| {
+                gates
+                    .get(targetNodeId)
+                    .cloned()
+                    .unwrap_or_default()
+                    .backoffElapsed(currentTimeMillis())
+            })
+            .unwrap_or(false);
+        if !retryAllowed {
+            return;
+        }
+        match self.probeRemoteClockSummary(targetNodeId).await {
+            Ok(_) => {
+                operit_util::AppLogger::AppLogger::i(
+                    "SpacePersistenceSyncService",
+                    &format!("sync_gate.reattached target={targetNodeId}"),
+                );
+            }
+            Err(error) => {
+                self.recordPeerPassFailed(targetNodeId);
+                operit_util::AppLogger::AppLogger::w(
+                    "SpacePersistenceSyncService",
+                    &format!(
+                        "sync_gate.reattach_failed target={targetNodeId} error={error}"
+                    ),
+                );
+            }
+        }
     }
 
     /// Decides once per cycle whether this cycle must run a full synchronization
