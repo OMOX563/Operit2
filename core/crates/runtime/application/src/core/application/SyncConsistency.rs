@@ -12,6 +12,9 @@ use operit_store::RuntimeFileSyncStore::{FileCorrectionReference, FileCoverage};
 use operit_store::PluginStorage;
 use serde_json::{json, Value};
 
+/// Files written this recently are still in flight; comparing them would race the writer.
+const HOT_OWNER_QUIET_MS: i64 = 5_000;
+
 /// File contents and their durable replay boundary travel together.
 #[derive(serde::Serialize, serde::Deserialize)]
 struct CorrectionFile {
@@ -141,7 +144,21 @@ impl OperitApplication {
             Some(storage) => operit_store::PreferenceLayout::retirements(storage).map_err(|e|e.to_string())?,
             None => Default::default(),
         };
-        Ok(json!({"manifests":manifests,"pendingOwners":pending,"skipped":skipped,"retired":retired,"errors":errors,"boundary":operit_store::Transaction::digest(&receipt)?}))
+        // A file touched a moment ago is still being written: a transfer would race the writer and
+        // the digest would never settle. Peers skip the union of these owners, so both stay in step.
+        let hot: std::collections::BTreeSet<String> = {
+            use operit_host_api::RuntimeStorageHost;
+            let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
+                .map(|elapsed| elapsed.as_millis() as i64).unwrap_or(0);
+            match self.hostManager.runtimeStorageHost.clone() {
+                Some(storage) => manifests.iter().filter_map(|manifest| {
+                    let modified = storage.modifiedAt(&manifest.owner.path).ok()? / 1000;
+                    (now - modified < HOT_OWNER_QUIET_MS).then(|| manifest.owner.path.clone())
+                }).collect(),
+                None => Default::default(),
+            }
+        };
+        Ok(json!({"manifests":manifests,"pendingOwners":pending,"skipped":skipped,"retired":retired,"hot":hot,"errors":errors,"boundary":operit_store::Transaction::digest(&receipt)?}))
     }
     pub(super) fn exportConsistencySnapshot(&self, owner: Owner, token: &str) -> Result<Value,String> {
         let pending = self.runtimeSyncOperationStore()?.pendingOperations().map_err(|e|e.to_string())?;

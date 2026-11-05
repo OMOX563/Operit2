@@ -17,6 +17,9 @@ struct Report {
     /// Layout retirements reported by the peer; both sides must ignore these owners.
     #[serde(default)]
     retired: BTreeSet<String>,
+    /// Owners the peer is still writing; both sides defer them instead of failing the pass.
+    #[serde(default)]
+    hot: BTreeSet<String>,
 }
 
 /// Exchanging every known original does not prove equal contents on an older peer.
@@ -189,14 +192,22 @@ fn retirements(local: &Report, remote: &Report) -> BTreeSet<String> {
     local.retired.union(&remote.retired).cloned().collect()
 }
 
+/// Either endpoint may still be writing an owner; deferring is symmetric for the same reason.
+fn hotOwners(local: &Report, remote: &Report) -> BTreeSet<String> {
+    local.hot.union(&remote.hot).cloned().collect()
+}
+
 /// The union of inventories includes files that exist on only one endpoint.
 fn correctionPlans<'a>(local: &'a Report, remote: &'a Report) -> Vec<(Option<&'a Manifest>, Option<&'a Manifest>, Source)> {
     let mut files = BTreeMap::new();
     for manifest in &local.manifests { files.entry((&manifest.owner.path,&manifest.owner.backend)).or_insert((None,None)).0 = Some(manifest); }
     for manifest in &remote.manifests { files.entry((&manifest.owner.path,&manifest.owner.backend)).or_insert((None,None)).1 = Some(manifest); }
     let retired = retirements(local, remote);
+    let hot = hotOwners(local, remote);
     files.into_iter().filter_map(|((path,_),(a,b))| {
         if is_retired(path, &retired) { return None; }
+        // Correcting a file that is still being written only guarantees another mismatch.
+        if hot.contains(path) { return None; }
         if local.pendingOwners.contains(path) || remote.pendingOwners.contains(path) { return None; }
         let choice = match (a,b) {
             (Some(a),Some(b)) => compare_manifests(a,b).ok()?,
@@ -238,8 +249,9 @@ fn verifyReports(local: &Report, remote: &Report, changed: &BTreeSet<String>) ->
         return Err("Consistency check has owner errors".into());
     }
     let retired = retirements(local, remote);
+    let hot = hotOwners(local, remote);
     if local.pendingOwners.union(&remote.pendingOwners)
-        .any(|path| !changed.contains(path) && !is_retired(path, &retired)) {
+        .any(|path| !changed.contains(path) && !is_retired(path, &retired) && !hot.contains(path)) {
         return Err("Consistency check has pending owners".into());
     }
     // A retired owner never synchronizes, so its transactions can never be sealed either.
@@ -255,7 +267,8 @@ fn verifyReports(local: &Report, remote: &Report, changed: &BTreeSet<String>) ->
                 None => Err(format!("Missing synchronized file: {}",manifest.owner.path)),
             };
             if matches!(comparison, Ok(Source::Equal)) { continue; }
-            if changed.contains(&manifest.owner.path) {
+            // A hot owner is deferred, not broken: report incomplete so the next idle pass retries.
+            if changed.contains(&manifest.owner.path) || hot.contains(&manifest.owner.path) {
                 complete = false;
                 continue;
             }
@@ -280,7 +293,7 @@ mod tests {
             manifests: vec![snapshot.manifest().unwrap()],
             boundary: Default::default(),
             errors: vec![],
-            pendingOwners: BTreeSet::new(), skipped: BTreeMap::new(), retired: BTreeSet::new(),
+            pendingOwners: BTreeSet::new(), skipped: BTreeMap::new(), retired: BTreeSet::new(), hot: BTreeSet::new(),
         }
     }
 
@@ -347,8 +360,8 @@ mod tests {
 
     #[test]
     fn correction_uses_each_peers_export_boundary_without_equal_histories_or_wall_clocks() {
-        let mut a = Report { manifests: vec![], boundary: Default::default(), errors: vec![], pendingOwners: BTreeSet::new(), skipped: BTreeMap::new(), retired: BTreeSet::new() };
-        let mut b = Report { manifests: vec![], boundary: Default::default(), errors: vec![], pendingOwners: BTreeSet::new(), skipped: BTreeMap::new(), retired: BTreeSet::new() };
+        let mut a = Report { manifests: vec![], boundary: Default::default(), errors: vec![], pendingOwners: BTreeSet::new(), skipped: BTreeMap::new(), retired: BTreeSet::new(), hot: BTreeSet::new() };
+        let mut b = Report { manifests: vec![], boundary: Default::default(), errors: vec![], pendingOwners: BTreeSet::new(), skipped: BTreeMap::new(), retired: BTreeSet::new(), hot: BTreeSet::new() };
         let mut a_exported = SyncReceipt::default();
         let mut b_exported = SyncReceipt::default();
         a_exported.observe("a", 17);
