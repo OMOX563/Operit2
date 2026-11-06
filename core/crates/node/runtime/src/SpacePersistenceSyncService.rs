@@ -686,8 +686,18 @@ impl SpacePersistenceSyncService {
         if !retryAllowed {
             return;
         }
-        match self.probeRemoteClockSummary(targetNodeId).await {
-            Ok(_) => {
+        let peers = match self.state.nodeRouter.nodeServices() {
+            Ok(services) => services.peers(),
+            Err(error) => {
+                operit_util::AppLogger::AppLogger::w(
+                    "SpacePersistenceSyncService",
+                    &format!("sync_gate.reattach_no_service target={targetNodeId} error={error}"),
+                );
+                return;
+            }
+        };
+        match peers.ensureConnected(targetNodeId).await {
+            Ok(()) => {
                 operit_util::AppLogger::AppLogger::i(
                     "SpacePersistenceSyncService",
                     &format!("sync_gate.reattached target={targetNodeId}"),

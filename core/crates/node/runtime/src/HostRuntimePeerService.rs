@@ -1233,6 +1233,12 @@ impl RuntimePeerService for HostRuntimePeerService {
     }
     fn outboundPeerNodeIds(&self) -> Result<BTreeSet<String>, CoreLinkError> { Ok(self.pairedPeers()?.into_iter().filter(|p| p.outbound).map(|p| p.nodeId).collect()) }
     fn activePeerNodeIds(&self) -> Result<BTreeSet<String>, CoreLinkError> { Ok(self.state.active.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).clone()) }
+    /// Dials the peer when no live channel exists. The sync loop calls this
+    /// after routing has already refused the peer as unreachable, so it must
+    /// not go back through the router.
+    async fn ensureConnected(&self, node: &str) -> Result<(), CoreLinkError> {
+        self.acquireChannel(node).await.map(|_| ())
+    }
     fn subscribePeerChanges(&self) -> broadcast::Receiver<()> { self.state.changes.subscribe() }
     fn pairingPrompts(&self) -> Result<Vec<PairingPrompt>, CoreLinkError> {
         Ok(self.pendingRecords(RUNTIME_LINK_ACCESS_PENDING_PAIRINGS_PATH)?.into_values()

@@ -148,6 +148,16 @@ pub trait RuntimePeerService: Send + Sync {
     fn pairingPrompts(&self) -> Result<Vec<PairingPrompt>, CoreLinkError>;
 
     /// 关闭该节点所有渠道的当前连接，保留配对授权；由统一连接所有者执行。
+    /// Opens the peer's authenticated channel when it is not already live.
+    ///
+    /// Sync reaches peers through routing, and routing refuses to plan a hop
+    /// while the peer is missing from the active set, so a dropped peer has no
+    /// way back on its own. This is the one entry that dials without a route.
+    /// Defaulted to a no-op so injected test services stay unchanged.
+    async fn ensureConnected(&self, _peerNodeId: &str) -> Result<(), CoreLinkError> {
+        Ok(())
+    }
+
     async fn disconnectPeer(&self, peerNodeId: &str) -> Result<(), CoreLinkError>;
 
     /// Updates the existing outbound pairing endpoint and probes the single authenticated channel.
